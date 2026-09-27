@@ -20,11 +20,24 @@ export class S3Service {
     this.bucket = this.config.get<string>('AWS_S3_BUCKET', 'pixelforge-images');
     this.region = this.config.get<string>('AWS_REGION', 'eu-north-1');
 
+    const accessKeyId = this.config.get<string>('AWS_ACCESS_KEY_ID');
+    const secretAccessKey = this.config.get<string>('AWS_SECRET_ACCESS_KEY');
+    const sessionToken = this.config.get<string>('AWS_SESSION_TOKEN');
+
     this.client = new S3Client({
       region: this.region,
-      credentials: fromNodeProviderChain({
-        profile: this.config.get<string>('AWS_PROFILE', 'pixelforge'),
-      }),
+      // If static keys are provided (e.g. on Render/Vercel), use them directly.
+      // Otherwise fall back to the local provider chain (dev machine with SSO).
+      credentials:
+        accessKeyId && secretAccessKey
+          ? {
+              accessKeyId,
+              secretAccessKey,
+              ...(sessionToken ? { sessionToken } : {}),
+            }
+          : fromNodeProviderChain({
+              profile: this.config.get<string>('AWS_PROFILE', 'pixelforge'),
+            }),
     });
   }
 
