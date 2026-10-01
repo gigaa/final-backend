@@ -25,7 +25,7 @@ export class MailService {
     this.logger.log(`API key set: ${!!apiKey}`);
 
     const payload = {
-      sender: { name: 'Image App', email: 'giga.gabat1@gmail.com' },
+      sender: { name: 'PixelForge', email: 'giga.gabatashvili@gmail.com' },
       to: [{ email: toEmail, name: name || toEmail }],
       subject: 'Verify your email address',
       htmlContent: `
