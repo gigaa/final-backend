@@ -3,6 +3,7 @@ import {
   ConflictException,
   UnauthorizedException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -29,8 +30,6 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
-
-    // Generate a secure random token valid for 24 hours
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
@@ -102,10 +101,13 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    // 403 + email so the client can redirect to /pending-verification
     if (!user.isEmailVerified) {
-      throw new UnauthorizedException(
-        'Please verify your email address before logging in.',
-      );
+      throw new ForbiddenException({
+        code: 'EMAIL_NOT_VERIFIED',
+        email: user.email,
+        message: 'Please verify your email address before logging in.',
+      });
     }
 
     const token = this.signToken(String(user._id), user.email);
@@ -117,6 +119,47 @@ export class AuthService {
         name: user.name,
       },
       access_token: token,
+    };
+  }
+
+  async resendVerification(email: string) {
+    const user = await this.userModel.findOne({ email });
+
+    // Don't reveal whether the email exists — always return success
+    if (!user || user.isEmailVerified) {
+      return {
+        message:
+          'If that email is registered and unverified, a new link has been sent.',
+      };
+    }
+
+    // Throttle: block resend if a token was issued less than 60 seconds ago
+    if (
+      user.emailVerificationExpires &&
+      user.emailVerificationExpires.getTime() - 24 * 60 * 60 * 1000 >
+        Date.now() - 60 * 1000
+    ) {
+      throw new BadRequestException(
+        'Please wait a moment before requesting another link.',
+      );
+    }
+
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    user.emailVerificationToken = verificationToken;
+    user.emailVerificationExpires = verificationExpires;
+    await user.save();
+
+    await this.mailService.sendVerificationEmail(
+      user.email,
+      user.name ?? '',
+      verificationToken,
+    );
+
+    return {
+      message:
+        'If that email is registered and unverified, a new link has been sent.',
     };
   }
 
