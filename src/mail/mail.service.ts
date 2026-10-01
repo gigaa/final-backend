@@ -24,7 +24,7 @@ export class MailService {
     name: string,
     token: string,
   ): Promise<void> {
-    const appUrl = this.configService.get<string>('APP_URL');
+    const appUrl = this.configService.get<string>('CLIENT_URL');
     const verifyUrl = `${appUrl}/verify-email?token=${token}`;
 
     await this.transporter.sendMail({
