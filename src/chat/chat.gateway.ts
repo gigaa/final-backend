@@ -8,6 +8,7 @@ import {
   MessageBody,
   WsException,
 } from '@nestjs/websockets';
+import { forwardRef, Inject } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
@@ -36,6 +37,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private onlineUsers = new Map<string, Set<string>>();
 
   constructor(
+    @Inject(forwardRef(() => ChatService))
     private chatService: ChatService,
     private jwtService: JwtService,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
@@ -62,28 +64,29 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const user = await this.userModel
         .findById(payload.sub)
-        .select('_id name isEmailVerified');
+        .select('_id name email isEmailVerified');
       if (!user || !user.isEmailVerified) throw new Error('Unauthorized');
 
       (client as AuthenticatedSocket).userId = String(user._id);
-      (client as AuthenticatedSocket).userName = user.name ?? user.email ?? '';
+      (client as AuthenticatedSocket).userName =
+        (user as any).name ?? (user as any).email ?? '';
 
-      // Track online status
       const uid = String(user._id);
       if (!this.onlineUsers.has(uid)) {
         this.onlineUsers.set(uid, new Set());
       }
       this.onlineUsers.get(uid)!.add(client.id);
 
-      // Join a personal room so we can send targeted events
-      client.join(`user:${uid}`);
+      // Join personal room for targeted delivery
+      void client.join(`user:${uid}`);
 
-      // Broadcast online status to all connected clients
+      // Broadcast online status
       this.server.emit('user:online', { userId: uid });
 
-      // Send the full online list to the newly connected client
-      const onlineList = Array.from(this.onlineUsers.keys());
-      client.emit('users:online', { users: onlineList });
+      // Send full online list to the newly connected client
+      client.emit('users:online', {
+        users: Array.from(this.onlineUsers.keys()),
+      });
     } catch {
       client.emit('error', { message: 'Authentication failed' });
       client.disconnect();
@@ -104,73 +107,43 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  // ── Events ───────────────────────────────────────────────
+  // ── Emit helpers (called by ChatService) ─────────────────
 
-  /** Client sends a text message */
+  /** Push a chat event to both participants */
+  sendToUsers(
+    userIdA: string,
+    userIdB: string,
+    event: string,
+    payload: object,
+  ) {
+    this.server.to(`user:${userIdA}`).emit(event, payload);
+    this.server.to(`user:${userIdB}`).emit(event, payload);
+  }
+
+  /** Push an event to a single user (all their tabs) */
+  sendToUser(userId: string, event: string, payload: object) {
+    this.server.to(`user:${userId}`).emit(event, payload);
+  }
+
+  // ── WebSocket event handlers ──────────────────────────────
+
+  /** Client sends a text message via WebSocket */
   @SubscribeMessage('message:send')
   async handleSendMessage(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() data: { recipientId: string; content: string },
   ) {
     const { recipientId, content } = data;
-
     if (!recipientId || !content?.trim()) {
       throw new WsException('recipientId and content are required');
     }
 
-    const msg = await this.chatService.saveTextMessage(
+    await this.chatService.saveTextMessage(
       client.userId,
       recipientId,
       content.trim(),
     );
-
-    const payload = {
-      _id: String((msg as any)._id),
-      sender: client.userId,
-      recipient: recipientId,
-      type: 'text',
-      content: msg.content,
-      read: false,
-      createdAt: (msg as any).createdAt,
-    };
-
-    // Deliver to recipient (all their tabs) and echo back to sender
-    this.server.to(`user:${recipientId}`).emit('message:receive', payload);
-    this.server.to(`user:${client.userId}`).emit('message:receive', payload);
-  }
-
-  /** Client sends a notification after uploading an image via REST */
-  @SubscribeMessage('message:image')
-  async handleImageMessage(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody()
-    data: {
-      recipientId: string;
-      messageId: string;
-      imageUrl: string;
-      imageOriginalName: string;
-    },
-  ) {
-    const { recipientId, messageId, imageUrl, imageOriginalName } = data;
-
-    if (!recipientId || !messageId) {
-      throw new WsException('recipientId and messageId are required');
-    }
-
-    const payload = {
-      _id: messageId,
-      sender: client.userId,
-      recipient: recipientId,
-      type: 'image',
-      content: '',
-      imageUrl,
-      imageOriginalName,
-      read: false,
-      createdAt: new Date().toISOString(),
-    };
-
-    this.server.to(`user:${recipientId}`).emit('message:receive', payload);
-    this.server.to(`user:${client.userId}`).emit('message:receive', payload);
+    // ChatService calls gateway.sendToUsers — no extra emit needed here
   }
 
   /** Client marks messages from a conversation as read */
@@ -180,20 +153,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { friendId: string },
   ) {
     await this.chatService.markAsRead(client.userId, data.friendId);
-    // Notify the friend that their messages were read
-    this.server
-      .to(`user:${data.friendId}`)
-      .emit('message:read', { by: client.userId });
   }
 
   /** Client asks for the current online users list */
   @SubscribeMessage('users:online')
   handleGetOnline(@ConnectedSocket() client: AuthenticatedSocket) {
-    const onlineList = Array.from(this.onlineUsers.keys());
-    client.emit('users:online', { users: onlineList });
+    client.emit('users:online', { users: Array.from(this.onlineUsers.keys()) });
   }
 
-  // ── Public helper used by other services if needed ───────
+  // ── Public helpers ────────────────────────────────────────
 
   isOnline(userId: string): boolean {
     return this.onlineUsers.has(userId);

@@ -1,4 +1,9 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  ForbiddenException,
+  forwardRef,
+  Inject,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
@@ -9,7 +14,7 @@ import {
 } from '../schemas/message.schema';
 import { FriendsService } from '../friends/friends.service';
 import { S3Service } from '../s3/s3.service';
-import { RealtimeService } from '../realtime/realtime.service';
+import { ChatGateway } from './chat.gateway';
 
 @Injectable()
 export class ChatService {
@@ -17,10 +22,11 @@ export class ChatService {
     @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
     private friendsService: FriendsService,
     private s3: S3Service,
-    private realtime: RealtimeService,
+    @Inject(forwardRef(() => ChatGateway))
+    private gateway: ChatGateway,
   ) {}
 
-  /** Save a text message and push it via Apinator */
+  /** Save a text message and push it via WebSocket */
   async saveTextMessage(
     senderId: string,
     recipientId: string,
@@ -36,12 +42,12 @@ export class ChatService {
     });
 
     const payload = this.buildTextPayload(msg, senderId, recipientId);
-    await this.realtime.sendChatMessage(senderId, recipientId, payload);
+    this.gateway.sendToUsers(senderId, recipientId, 'message:receive', payload);
 
     return msg;
   }
 
-  /** Upload image to S3, save the message, push via Apinator */
+  /** Upload image to S3, save the message, push via WebSocket */
   async saveImageMessage(
     senderId: string,
     recipientId: string,
@@ -78,7 +84,7 @@ export class ChatService {
       createdAt: (msg as any).createdAt,
     };
 
-    await this.realtime.sendChatMessage(senderId, recipientId, payload);
+    this.gateway.sendToUsers(senderId, recipientId, 'message:receive', payload);
 
     return Object.assign(msg.toObject(), { imageUrl }) as any;
   }
@@ -146,10 +152,7 @@ export class ChatService {
     );
 
     // Notify the sender that their messages were read
-    await this.realtime.sendChatMessage(userId, friendId, {
-      type: 'message:read',
-      by: userId,
-    });
+    this.gateway.sendToUser(friendId, 'message:read', { by: userId });
   }
 
   /** Unread counts per conversation */

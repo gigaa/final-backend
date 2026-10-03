@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import { join } from 'path';
 import { AppModule } from './app.module';
 
@@ -36,7 +37,8 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // Socket.io adapter — removed, using Apinator hosted WebSocket service
+  // Socket.io adapter — required for ChatGateway WebSocket support
+  app.useWebSocketAdapter(new IoAdapter(app));
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
