@@ -9,6 +9,7 @@ import {
 } from '../schemas/message.schema';
 import { FriendsService } from '../friends/friends.service';
 import { S3Service } from '../s3/s3.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 @Injectable()
 export class ChatService {
@@ -16,9 +17,10 @@ export class ChatService {
     @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
     private friendsService: FriendsService,
     private s3: S3Service,
+    private realtime: RealtimeService,
   ) {}
 
-  /** Save a text message after verifying friendship */
+  /** Save a text message and push it via Apinator */
   async saveTextMessage(
     senderId: string,
     recipientId: string,
@@ -26,15 +28,20 @@ export class ChatService {
   ): Promise<MessageDocument> {
     await this.assertFriends(senderId, recipientId);
 
-    return this.messageModel.create({
+    const msg = await this.messageModel.create({
       sender: new Types.ObjectId(senderId),
       recipient: new Types.ObjectId(recipientId),
       type: MessageType.TEXT,
       content,
     });
+
+    const payload = this.buildTextPayload(msg, senderId, recipientId);
+    await this.realtime.sendChatMessage(senderId, recipientId, payload);
+
+    return msg;
   }
 
-  /** Upload image to S3 and save the message */
+  /** Upload image to S3, save the message, push via Apinator */
   async saveImageMessage(
     senderId: string,
     recipientId: string,
@@ -46,7 +53,6 @@ export class ChatService {
 
     const ext = originalName.split('.').pop() ?? 'jpg';
     const s3Key = `chat-images/${uuidv4()}.${ext}`;
-
     await this.s3.upload(s3Key, fileBuffer, mimetype);
 
     const msg = await this.messageModel.create({
@@ -59,10 +65,25 @@ export class ChatService {
     });
 
     const imageUrl = await this.s3.getPresignedUrl(s3Key);
+
+    const payload = {
+      _id: String((msg as any)._id),
+      sender: senderId,
+      recipient: recipientId,
+      type: 'image' as const,
+      content: '',
+      imageUrl,
+      imageOriginalName: originalName,
+      read: false,
+      createdAt: (msg as any).createdAt,
+    };
+
+    await this.realtime.sendChatMessage(senderId, recipientId, payload);
+
     return Object.assign(msg.toObject(), { imageUrl }) as any;
   }
 
-  /** Paginated conversation history between two users */
+  /** Paginated conversation history */
   async getConversation(
     userId: string,
     friendId: string,
@@ -95,7 +116,6 @@ export class ChatService {
       this.messageModel.countDocuments(query),
     ]);
 
-    // Attach fresh presigned URLs for image messages
     const messages = await Promise.all(
       docs.map(async (m) => {
         if (m.type === MessageType.IMAGE && m.imageKey) {
@@ -106,7 +126,6 @@ export class ChatService {
       }),
     );
 
-    // Return in ascending order (oldest first) for chat display
     return {
       messages: messages.reverse(),
       total,
@@ -115,7 +134,7 @@ export class ChatService {
     };
   }
 
-  /** Mark all messages from friendId → userId as read */
+  /** Mark all messages from friendId → userId as read, push read receipt */
   async markAsRead(userId: string, friendId: string) {
     await this.messageModel.updateMany(
       {
@@ -125,25 +144,20 @@ export class ChatService {
       },
       { $set: { read: true } },
     );
+
+    // Notify the sender that their messages were read
+    await this.realtime.sendChatMessage(userId, friendId, {
+      type: 'message:read',
+      by: userId,
+    });
   }
 
-  /** Count unread messages per conversation for a user */
+  /** Unread counts per conversation */
   async getUnreadCounts(userId: string): Promise<Record<string, number>> {
     const results = await this.messageModel.aggregate([
-      {
-        $match: {
-          recipient: new Types.ObjectId(userId),
-          read: false,
-        },
-      },
-      {
-        $group: {
-          _id: '$sender',
-          count: { $sum: 1 },
-        },
-      },
+      { $match: { recipient: new Types.ObjectId(userId), read: false } },
+      { $group: { _id: '$sender', count: { $sum: 1 } } },
     ]);
-
     return results.reduce(
       (acc, r) => {
         acc[String(r._id)] = r.count;
@@ -153,7 +167,7 @@ export class ChatService {
     );
   }
 
-  /** Download a chat image buffer — proxied through backend to avoid S3 CORS */
+  /** Download a chat image — proxied through backend to avoid S3 CORS */
   async downloadChatImage(
     messageId: string,
     requesterId: string,
@@ -162,8 +176,6 @@ export class ChatService {
     if (!msg || msg.type !== MessageType.IMAGE || !msg.imageKey) {
       throw new ForbiddenException('Image not found');
     }
-
-    // Only sender or recipient may download
     const isParty =
       String(msg.sender) === requesterId ||
       String(msg.recipient) === requesterId;
@@ -177,10 +189,21 @@ export class ChatService {
     };
   }
 
+  private buildTextPayload(msg: any, senderId: string, recipientId: string) {
+    return {
+      _id: String(msg._id),
+      sender: senderId,
+      recipient: recipientId,
+      type: 'text' as const,
+      content: msg.content,
+      read: false,
+      createdAt: msg.createdAt,
+    };
+  }
+
   private async assertFriends(userA: string, userB: string) {
     const ok = await this.friendsService.areFriends(userA, userB);
-    if (!ok) {
+    if (!ok)
       throw new ForbiddenException('You can only chat with your friends');
-    }
   }
 }
