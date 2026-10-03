@@ -11,9 +11,11 @@ import {
   DefaultValuePipe,
   HttpCode,
   HttpStatus,
+  Res,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { ChatService } from './chat.service';
@@ -82,5 +84,24 @@ export class ChatController {
   @Get('unread')
   async unread(@CurrentUser() user: any) {
     return this.chatService.getUnreadCounts(String(user._id));
+  }
+
+  // GET /api/chat/messages/:messageId/download — proxy S3 image through backend
+  @Get('messages/:messageId/download')
+  async downloadImage(
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
+    const { buffer, mimetype, originalName } =
+      await this.chatService.downloadChatImage(messageId, String(user._id));
+
+    res.setHeader('Content-Type', mimetype);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(originalName)}"`,
+    );
+    res.setHeader('Content-Length', buffer.length);
+    res.end(buffer);
   }
 }

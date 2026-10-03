@@ -2,7 +2,11 @@ import { Injectable, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
-import { Message, MessageDocument, MessageType } from '../schemas/message.schema';
+import {
+  Message,
+  MessageDocument,
+  MessageType,
+} from '../schemas/message.schema';
 import { FriendsService } from '../friends/friends.service';
 import { S3Service } from '../s3/s3.service';
 
@@ -149,12 +153,34 @@ export class ChatService {
     );
   }
 
+  /** Download a chat image buffer — proxied through backend to avoid S3 CORS */
+  async downloadChatImage(
+    messageId: string,
+    requesterId: string,
+  ): Promise<{ buffer: Buffer; mimetype: string; originalName: string }> {
+    const msg = await this.messageModel.findById(messageId);
+    if (!msg || msg.type !== MessageType.IMAGE || !msg.imageKey) {
+      throw new ForbiddenException('Image not found');
+    }
+
+    // Only sender or recipient may download
+    const isParty =
+      String(msg.sender) === requesterId ||
+      String(msg.recipient) === requesterId;
+    if (!isParty) throw new ForbiddenException('Access denied');
+
+    const buffer = await this.s3.download(msg.imageKey);
+    return {
+      buffer,
+      mimetype: 'application/octet-stream',
+      originalName: msg.imageOriginalName ?? 'image',
+    };
+  }
+
   private async assertFriends(userA: string, userB: string) {
     const ok = await this.friendsService.areFriends(userA, userB);
     if (!ok) {
-      throw new ForbiddenException(
-        'You can only chat with your friends',
-      );
+      throw new ForbiddenException('You can only chat with your friends');
     }
   }
 }
