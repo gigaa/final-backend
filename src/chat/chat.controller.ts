@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
   Param,
   Query,
   Body,
@@ -119,5 +121,39 @@ export class ChatController {
     );
     res.setHeader('Content-Length', buffer.length);
     res.end(buffer);
+  }
+
+  // DELETE /api/chat/messages/:messageId — delete a single message
+  @Delete('messages/:messageId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteMessage(
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: any,
+  ) {
+    await this.chatService.deleteMessage(messageId, String(user._id));
+  }
+
+  // PATCH /api/chat/messages/:messageId — edit text content of a message
+  @Patch('messages/:messageId')
+  async editMessage(
+    @Param('messageId') messageId: string,
+    @Body() body: { content: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.chatService.editMessage(
+      messageId,
+      String(user._id),
+      body.content ?? '',
+    );
+  }
+
+  // DELETE /api/chat/:friendId/conversation — delete entire conversation
+  @Delete(':friendId/conversation')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteConversation(
+    @Param('friendId') friendId: string,
+    @CurrentUser() user: any,
+  ) {
+    await this.chatService.deleteConversation(String(user._id), friendId);
   }
 }

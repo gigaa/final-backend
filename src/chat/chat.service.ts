@@ -1,6 +1,7 @@
 import {
   Injectable,
   ForbiddenException,
+  NotFoundException,
   forwardRef,
   Inject,
 } from '@nestjs/common';
@@ -168,6 +169,99 @@ export class ChatService {
       },
       {} as Record<string, number>,
     );
+  }
+
+  /** Delete a single message — only the sender can delete */
+  async deleteMessage(messageId: string, requesterId: string): Promise<void> {
+    const msg = await this.messageModel.findById(messageId);
+    if (!msg) throw new NotFoundException('Message not found');
+    if (String(msg.sender) !== requesterId)
+      throw new ForbiddenException('Only the sender can delete a message');
+
+    // If image message, also remove from S3
+    if (msg.type === MessageType.IMAGE && msg.imageKey) {
+      await this.s3.delete(msg.imageKey).catch(() => {});
+    }
+
+    await this.messageModel.deleteOne({ _id: msg._id });
+
+    const senderId = String(msg.sender);
+    const recipientId = String(msg.recipient);
+    this.gateway.sendToUsers(senderId, recipientId, 'message:deleted', {
+      messageId,
+      conversationWith: recipientId,
+    });
+  }
+
+  /** Edit a text message — only the sender can edit, images cannot be edited */
+  async editMessage(
+    messageId: string,
+    requesterId: string,
+    content: string,
+  ): Promise<MessageDocument> {
+    const msg = await this.messageModel.findById(messageId);
+    if (!msg) throw new NotFoundException('Message not found');
+    if (String(msg.sender) !== requesterId)
+      throw new ForbiddenException('Only the sender can edit a message');
+    if (msg.type !== MessageType.TEXT)
+      throw new ForbiddenException('Only text messages can be edited');
+
+    msg.content = content.trim();
+    (msg as any).edited = true;
+    await msg.save();
+
+    const senderId = String(msg.sender);
+    const recipientId = String(msg.recipient);
+    this.gateway.sendToUsers(senderId, recipientId, 'message:edited', {
+      messageId,
+      content: msg.content,
+    });
+
+    return msg;
+  }
+
+  /** Delete entire conversation between two users */
+  async deleteConversation(userId: string, friendId: string): Promise<void> {
+    await this.assertFriends(userId, friendId);
+
+    // Collect image keys to delete from S3
+    const imageMsgs = await this.messageModel
+      .find({
+        $or: [
+          {
+            sender: new Types.ObjectId(userId),
+            recipient: new Types.ObjectId(friendId),
+          },
+          {
+            sender: new Types.ObjectId(friendId),
+            recipient: new Types.ObjectId(userId),
+          },
+        ],
+        type: MessageType.IMAGE,
+        imageKey: { $ne: null },
+      })
+      .lean();
+
+    await Promise.all(
+      imageMsgs.map((m) => this.s3.delete(m.imageKey!).catch(() => {})),
+    );
+
+    await this.messageModel.deleteMany({
+      $or: [
+        {
+          sender: new Types.ObjectId(userId),
+          recipient: new Types.ObjectId(friendId),
+        },
+        {
+          sender: new Types.ObjectId(friendId),
+          recipient: new Types.ObjectId(userId),
+        },
+      ],
+    });
+
+    this.gateway.sendToUsers(userId, friendId, 'conversation:deleted', {
+      between: [userId, friendId],
+    });
   }
 
   /** Download a chat image — proxied through backend to avoid S3 CORS */
