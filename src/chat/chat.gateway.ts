@@ -80,6 +80,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // Broadcast online status to all connected clients
       this.server.emit('user:online', { userId: uid });
+
+      // Send the full online list to the newly connected client
+      const onlineList = Array.from(this.onlineUsers.keys());
+      client.emit('users:online', { users: onlineList });
     } catch {
       client.emit('error', { message: 'Authentication failed' });
       client.disconnect();

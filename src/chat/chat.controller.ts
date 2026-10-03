@@ -4,6 +4,7 @@ import {
   Post,
   Param,
   Query,
+  Body,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -36,6 +37,21 @@ const chatImageMulter = {
 @Controller('chat')
 export class ChatController {
   constructor(private chatService: ChatService) {}
+
+  // POST /api/chat/:friendId/messages — REST fallback for text messages
+  @Post(':friendId/messages')
+  async sendTextMessage(
+    @Param('friendId') friendId: string,
+    @Body() body: { content: string },
+    @CurrentUser() user: any,
+  ) {
+    const msg = await this.chatService.saveTextMessage(
+      String(user._id),
+      friendId,
+      body.content ?? '',
+    );
+    return msg;
+  }
 
   // GET /api/chat/:friendId/messages — paginated history
   @Get(':friendId/messages')
