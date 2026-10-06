@@ -60,7 +60,12 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new BadRequestException('Invalid verification link');
+      // Token not found — could mean already verified (token was cleared) or genuinely invalid.
+      // Check if a user with a verified account exists by looking up via token field being null.
+      // We can't recover the email from the token alone, so return a helpful message.
+      throw new BadRequestException(
+        'This verification link is invalid or has already been used. If your email is already verified, please log in.',
+      );
     }
 
     if (
